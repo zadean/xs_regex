@@ -8,3 +8,9 @@ ebin/*.beam
 rel/example_project
 .concrete/DEV_MODE
 .rebar
+/ebin/
+.settings
+.project
+/src/xs_regex_parser.erl
+/src/xs_regex_scanner.erl
+scripts/*.beam
