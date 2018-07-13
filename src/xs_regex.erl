@@ -120,14 +120,14 @@ normalize(String) ->
 
 %% Translates an XML Schema regex string into Erlang flavor. 
 -spec translate(string()) -> {ok, string()} | {error, _}.
-translate([]) -> [];
+translate([]) -> {ok, []};
 translate(String) ->
    % Should not fail
    {ok,Tokens,_} = xs_regex_scanner:string(String),
-   io:format("~p~n",[Tokens]),
+   %io:format("~p~n",[Tokens]),
    case xs_regex_parser:parse(Tokens) of
       {ok,Tree} ->
-         io:format("~p~n",[Tree]),
+         %io:format("~p~n",[Tree]),
          case translate_1(Tree) of
             {error,_} = Err ->
                Err;
@@ -171,7 +171,7 @@ get_depth(String) ->
 %% string of flag characters. 
 %% Flag characters can only be "s, m, i, x and q". See comment above.
 %% Returns {MatchesZeroLengthString, MP}
--spec compile(string(),string()) -> {boolean(), any()}.
+-spec compile(string(),string()) -> {boolean(), any()} | {error, _}.
 compile(Expr0,Flags) ->
    try
       FlagList1 = regex_flags(Flags),
@@ -184,7 +184,9 @@ compile(Expr0,Flags) ->
                 true ->
                    Expr0
              end,
-      Expr1 = if Q == [] -> translate(Expr);
+      Expr1 = if Q == [] -> 
+                    {ok, Tr} = translate(Expr),
+                    Tr;
                  true -> "\\Q" ++ Expr ++ "\\E"
               end,
       {ok, MP} = re:compile(Expr1, Opts),
@@ -467,15 +469,8 @@ regex_flags(Flags) ->
                      throw({error, {invalid_flag, C}})
                end
          end,        
-   try 
-      lists:foldl(Fun, #{}, Flags) 
-   of 
-      M ->
-         lists:flatten(maps:values(M))
-   catch
-      _:Err ->
-         Err
-   end.
+   M = lists:foldl(Fun, #{}, Flags),
+   lists:flatten(maps:values(M)).
 
 get_depth([],D) -> D;
 get_depth([$)|T],D) ->
