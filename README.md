@@ -1,21 +1,60 @@
 xs_regex
 =====
 
-An OTP library that translates XML Schema regular expressions (described here https://www.w3.org/TR/xmlschema-2/#regexs) into the Erlang flavor.
+An OTP library that translates XML Schema regular expressions (described [here](https://www.w3.org/TR/xmlschema-2/#regexs)) into the Erlang flavor.
 
-One cool thing here is the ability to use range subtraction. So, [a-z-[s-u]] returns [a-rv-z].
-Also, all language blocks are implemented and the Unicode 10.0 table is used. 
+### XML Schema Features
+* Character classes (including the shorthands \i, \I, \c, \C, \d, \D, \w, \W).
+* **Character class subtraction** ([a-z-[s-u]] returns [a-rv-z]).
+* Alternation and groups.
+* Greedy quantifiers
+* Unicode properties and language blocks.
 
-The XML Multi-Character Escape sequences can also be used. That is: \i, \I, \c, \C, \d, \D, \w, \W. 
-These match (or negate) the initial name characters, name characters, decimal digits, and word characters (non punctuation, separator, and other).
+### XPath / XQuery Features
+* Anchors ("^", "$").
+* Lazy quantifiers.
+* Back-references (also in replacement text using $1 notation).
+* Capturing groups.
+* i, s, m, x, and q flags
 
-Back-references and positional replacements are also implemented. Examples to come.
+#### Flags
+* s - "dot-all", "." matches newline
+* m - Multi-line mode
+* i - Case-insensitive
+* x - "extended", whitespaces outside character classes are removed
+* q - All characters are treated as literals (s, m, and x have no effect)
 
 #### Usage
 
 ```erlang
 1> xs_regex:translate("[a-z-[s-u]]").
 {ok,"[a-rv-z]"}
+```
+
+The `xs_regex:compile/2` function returns a boolean stating if the pattern matches the empty string, and the compiled pattern. 
+
+```erlang
+1> xs_regex:compile("[a-z-[s-u]]", "ix").
+{false,{re_pattern,0,1,1,
+                   <<69,82,67,80,112,0,0,0,9,8,64,36,1,0,0,0,255,255,255,
+                     255,255,255,...>>}}
+```
+
+"$1" notation is transformed to "\g{1}" notation.
+
+```erlang
+1> Pattern = "(a)|(b)|(c)|(d)|(e)|(f)|(g)|(h)|(i)|(j)".
+"(a)|(b)|(c)|(d)|(e)|(f)|(g)|(h)|(i)|(j)"
+2> {_, MP} = xs_regex:compile(Pattern, "").
+{false,{re_pattern,10,1,1,
+                   <<69,82,67,80,198,0,0,0,32,8,64,36,1,0,0,0,255,255,255,
+                     255,255,255,...>>}}
+3> {ok, Depth} = xs_regex:get_depth(Pattern).
+{ok,10}
+4> {ok, Repl} = xs_regex:transform_replace("$1|$4",Depth).
+{ok,"\\g{1}|\\g{4}"}
+5> re:replace("abcdefghijk", MP, Repl, [{return,list},global]).
+"a||||d||||||k"
 ```
 
 Arabic decimal digits:
