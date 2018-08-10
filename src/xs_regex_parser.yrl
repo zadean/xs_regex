@@ -35,6 +35,9 @@ Terminals
 Rootsymbol regExp.
 
 Nonassoc  100   '|'.
+Left      101   'charGroup'.
+Left      102   'quantifier'.
+
 
 %% Regular Expression
 %[64]     regExp      ::=      branch ( '|' branch )*
@@ -122,6 +125,7 @@ negCharGroup ->  '^' posCharGroup : '$2'.
 charGroupPart -> singleChar   : char_group_part('$1').
 charGroupPart -> '('          : {value,$(}.
 charGroupPart -> ')'          : {value,$)}.
+charGroupPart -> '?'          : {value,$?}.
 charGroupPart -> charRange    : '$1'.
 charGroupPart -> charClassEsc : '$1'.
 

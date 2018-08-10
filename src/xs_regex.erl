@@ -119,9 +119,11 @@ normalize(String) ->
    {ok, xs_regex_util:decode_string(String)}.
 
 %% Translates an XML Schema regex string into Erlang flavor. 
--spec translate(string()) -> {ok, string()} | {error, _}.
+-spec translate(string() | binary()) -> {ok, string()} | {error, _}.
 translate([]) -> {ok, []};
-translate(String) ->
+translate(Binary) when is_binary(Binary) ->
+   translate(unicode:characters_to_list(Binary));
+translate(String) when is_list(String) ->
    % Should not fail
    {ok,Tokens,_} = xs_regex_scanner:string(String),
    %io:format("~p~n",[Tokens]),
@@ -148,10 +150,12 @@ simple_escape([H|T]) ->
 
 %% Transforms an XML replacement string ('$' followed by decimal digit) 
 %% to Erlang flavor ( \g{N} ). Uses depth to ensure correct capture.
--spec transform_replace(string(), non_neg_integer()) -> 
-         {ok, string()} | {error, invalid_replacement}.
+-spec transform_replace(string() | binary(), non_neg_integer()) -> 
+         {ok, binary()} | {error, invalid_replacement}.
+transform_replace(String, Depth) when is_list(String) ->
+   transform_replace(unicode:characters_to_binary(String), Depth);
 transform_replace(String, Depth) ->
-   case transform_repl1(String,Depth) of
+   case transform_repl1(String,Depth,<<>>) of
       {error,_} = Err ->
          Err;
       Repl ->
@@ -160,9 +164,10 @@ transform_replace(String, Depth) ->
 
 %% Returns the capturing pattern depth of a pattern.
 %% Needed when transforming a replacement pattern.
--spec get_depth(string()) -> {ok, non_neg_integer()}.
+-spec get_depth(binary()) -> {ok, non_neg_integer()}.
 get_depth(String) ->
    {ok, get_depth(String,0)}.
+
 
 %% Matching the zero-length-string is (sometimes) an error in XQuery, 
 %% so can be tested here. 
@@ -171,7 +176,7 @@ get_depth(String) ->
 %% string of flag characters. 
 %% Flag characters can only be "s, m, i, x and q". See comment above.
 %% Returns {MatchesZeroLengthString, MP}
--spec compile(string(),string()) -> {boolean(), any()} | {error, _}.
+-spec compile(binary(),binary()) -> {boolean(), any()} | {error, _}.
 compile(Expr0,Flags) ->
    try
       FlagList1 = regex_flags(Flags),
@@ -187,7 +192,7 @@ compile(Expr0,Flags) ->
       Expr1 = if Q == [] -> 
                     {ok, Tr} = translate(Expr),
                     Tr;
-                 true -> "\\Q" ++ Expr ++ "\\E"
+                 true -> <<"\\Q", Expr/binary, "\\E">>
               end,
       {ok, MP} = re:compile(Expr1, Opts),
       case catch re:run("",MP) of
@@ -201,7 +206,7 @@ compile(Expr0,Flags) ->
    catch 
       _:{error, {invalid_flag, _}} = E ->
          E;
-      _:E -> 
+      _:E ->
          {error, {invalid_regex, E}}
    end.
 
@@ -455,8 +460,11 @@ check_back_refs([{piece,{back_ref,N},one} = H|T], Acc) ->
 check_back_refs([H|T],Acc) ->
    check_back_refs(T, [H|Acc]).
 
+regex_flags(<<>>) -> [dollar_endonly];
 regex_flags([]) -> [dollar_endonly];
-regex_flags(Flags) ->
+regex_flags(Flags) when is_binary(Flags) ->
+   regex_flags(binary_to_list(Flags));
+regex_flags(Flags) when is_list(Flags) ->
    % uses a map to only save last occurance
    Fun = fun(Char, Map) ->
                case Char of
@@ -472,45 +480,48 @@ regex_flags(Flags) ->
    M = lists:foldl(Fun, #{}, Flags),
    lists:flatten(maps:values(M)).
 
-get_depth([],D) -> D;
-get_depth([$)|T],D) ->
+get_depth(<<>>,D) -> D;
+get_depth(<<$),T/binary>>,D) ->
    get_depth(T,D+1);
-get_depth([_|T],D) ->
+get_depth(<<_,T/binary>>,D) ->
    get_depth(T,D).
 
-transform_repl1([],_) -> [];
-transform_repl1([$\\,$$|T],D) ->
-   [$\\,$$|transform_repl1(T,D)];
-transform_repl1([$\\,$\\|T],D) ->
-   [$\\,$\\|transform_repl1(T,D)];
-transform_repl1([$\\|_],_) ->
+transform_repl1(<<>>,_,Acc) -> Acc;
+transform_repl1(<<$\\,$$,T/binary>>,D,Acc) ->
+   transform_repl1(T,D,<<Acc/binary,$\\,$$>>);
+transform_repl1(<<$\\,$\\,T/binary>>,D,Acc) ->
+   transform_repl1(T,D,<<Acc/binary,$\\,$\\>>);
+transform_repl1(<<$\\,_/binary>>,_,_Acc) ->
    {error, invalid_replacement};
-transform_repl1([$$,H2|T],D) when H2 >= $0, H2 =< $9 ->
-   {Nums,Rest} = get_digits(T,[]),
-   Int = list_to_integer([H2|Nums]),
-   {NewInt,Tail} = chop_to(Int, D, []),
-   BR = "\\g{" ++ NewInt ++ "}" ++ Tail,
-   BR ++ transform_repl1(Rest,D);
-transform_repl1([$$|_],_) ->
+transform_repl1(<<$$,H2/utf8,T/binary>>,D,Acc) when H2 >= $0, H2 =< $9 ->
+   {Nums,Rest} = get_digits(T, <<>>),
+   Int = binary_to_integer(<<H2/utf8,Nums/binary>>),
+   {NewInt,Tail} = chop_to(Int, D, <<>>),
+   %io:format("~p~n",[{Nums,Rest,T,Int,NewInt,Tail}]),
+   transform_repl1(Rest,D,<<Acc/binary,"\\g{", NewInt/binary, "}", Tail/binary>>);
+transform_repl1(<<$$,_/binary>>,_,_Acc) ->
    {error, invalid_replacement};
-transform_repl1([H|T],D) ->
-   [H|transform_repl1(T,D)].
+transform_repl1(<<H/utf8,T/binary>>,D,Acc) ->
+   transform_repl1(T,D,<<Acc/binary,H/utf8>>).
 
-get_digits([],Acc) -> 
-   {lists:reverse(Acc),[]};
-get_digits([H|T],Acc) when H >= $0, H =< $9 -> 
-   get_digits(T,[H|Acc]);
-get_digits([H|T],Acc) -> 
-   {lists:reverse(Acc),[H|T]}.
+%returns {DigitsAsBinary,RestBinary}
+get_digits(<<>>,Acc) -> 
+   {Acc,<<>>};
+get_digits(<<H/utf8,T/binary>>,Acc) when H >= $0, H =< $9 -> 
+   get_digits(T,<<Acc/binary,H/utf8>>);
+get_digits(Bin,Acc) -> 
+   {Acc,Bin}.
 
-%returns {IntAsList,Tail}
+%returns {IntAsBinary,RestBinary}
 chop_to(Int,Max,Acc) when Int > Max ->
    Next = Int div 10,
-   Rem = integer_to_list(Int rem 10),
-   chop_to(Next,Max,Rem ++ Acc);
+   Rem = integer_to_binary(Int rem 10),
+   chop_to(Next,Max, <<Rem/binary,Acc/binary>>);
 chop_to(Int,_Max,Acc) ->
-   {integer_to_list(Int), Acc}.
+   {integer_to_binary(Int), Acc}.
 
+strip_esc_ws(Bin) when is_binary(Bin) -> 
+   strip_esc_ws(unicode:characters_to_list(Bin));
 strip_esc_ws([]) -> [];
 strip_esc_ws([$[|T]) -> 
    [$[|no_strip_esc_ws(T)];
