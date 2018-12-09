@@ -114,7 +114,10 @@
 %% Normalizes hex and decimal XML Character references in a string.
 %% Example: "AB&#x20;C"   -> "AB C"
 %%          "AB&#65296;C" -> [65, 66, 65296, 67]
--spec normalize(string()) -> {ok, string()}.
+-spec normalize(string() | binary()) -> {ok, string() | binary()}.
+normalize(String) when is_binary(String) ->
+   {ok, Ret} = normalize(unicode:characters_to_list(String)),
+   {ok, unicode:characters_to_binary(Ret)};
 normalize(String) ->
    {ok, xs_regex_util:decode_string(String)}.
 
@@ -130,7 +133,7 @@ translate(String) when is_list(String) ->
    case xs_regex_parser:parse(Tokens) of
       {ok,Tree} ->
          %io:format("~p~n",[Tree]),
-         case translate_1(Tree) of
+         case translate_1(Tree, 0) of
             {error,_} = Err ->
                Err;
             Trans ->
@@ -213,57 +216,62 @@ compile(Expr0,Flags) ->
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
--spec translate_1(regex()) -> string() | {group, group_part()} | {error, _}.
-translate_1([H|T]) when not is_integer(H) -> % regex()
-   translate_1(H) ++ lists:flatten(["|" ++ translate_1(X) || X <- T]);
-translate_1([H|_] = Str) when is_integer(H) -> % string()
+-spec translate_1(regex(), integer()) -> string() | {group, group_part()} | {error, _}.
+translate_1([H|_] = All, CurrCnt) when not is_integer(H) -> % regex()
+   Fun = fun(G, Cnt) ->
+               NewCnt = count_capturing_patterns(G) + Cnt,
+               {translate_1(G, Cnt), NewCnt}
+         end,
+   {[Hd|Tl],_} = lists:mapfoldl(Fun, CurrCnt, All),
+   Hd ++ lists:flatten(["|" ++ X || X <- Tl]);
+translate_1([H|_] = Str, _CurrCnt) when is_integer(H) -> % string()
    Str;
 
-translate_1({branch,Pieces}) ->
+translate_1({branch,Pieces}, CurrCnt) ->
    HasBackRef = lists:any(fun(P) -> is_back_ref(P) end, Pieces),
    NewPieces = 
       if HasBackRef ->
-            check_back_refs(Pieces);
+            check_back_refs(Pieces, CurrCnt);
          true ->
             Pieces
       end,
    {Hd,Tl,Rest} = maybe_strip_anchors(NewPieces),
-   Out = [translate_1(X) || X <- Rest], 
+   Out = [translate_1(X, CurrCnt) || X <- Rest], 
    Hd ++ lists:flatten(Out) ++ Tl;
 
-translate_1({piece, Atom, Quant}) ->
+translate_1({piece, Atom, Quant}, CurrCnt) ->
    Quant1 = check_quantifier(Quant),
-   translate_1(Atom) ++ Quant1;
-translate_1('^') -> "\\^";
-translate_1('$') -> "\\$";
-translate_1({back_ref,Int}) ->
+   translate_1(Atom, CurrCnt) ++ Quant1;
+translate_1('^', _) -> "\\^";
+translate_1('$', _) -> "\\$";
+translate_1({back_ref,Int}, _) ->
    "\\g{" ++ integer_to_list(Int) ++ "}";
-translate_1({char,C}) when is_list(C) -> C;
-translate_1({char,C}) -> [C];
-translate_1({char_class,Cc}) -> 
+translate_1({char,C}, _) when is_list(C) -> C;
+translate_1({char,C}, _) -> [C];
+translate_1({char_class,Cc}, _) -> 
    Range = xs_regex_util:range(Cc),
    "(?-i:[" ++ xs_regex_util:range_to_regex(Range) ++ "])";
-translate_1({neg_char_class,Cc}) -> 
+translate_1({neg_char_class,Cc}, _) -> 
    Range = xs_regex_util:range(Cc),
    "(?-i:[^" ++ xs_regex_util:range_to_regex(Range) ++ "])";
-translate_1({paren,RegEx}) ->
-   "("++ translate_1(RegEx) ++")";
-translate_1({nc_paren,RegEx} ) ->
-   "(?:"++ translate_1(RegEx) ++")";
-translate_1({RegEx,{q,Quant}} ) ->
-   translate_1(RegEx) ++ Quant;
+translate_1({paren,RegEx}, CurrCnt) ->
+   "("++ translate_1(RegEx, CurrCnt) ++")";
+translate_1({nc_paren,RegEx}, CurrCnt) ->
+   "(?:"++ translate_1(RegEx, CurrCnt) ++")";
+translate_1({RegEx,{q,Quant}}, CurrCnt) ->
+   translate_1(RegEx, CurrCnt) ++ Quant;
 
-translate_1({group,_} = G) ->
+translate_1({group,_} = G, _) ->
    translate_group(G);
-translate_1({neg_group,_} = G) ->
+translate_1({neg_group,_} = G, _) ->
    translate_group(G);
-translate_1({subtract,G1,G2}) ->
+translate_1({subtract,G1,G2}, _) ->
    translate_group({subtract,
                     combine_group(G1),
                     combine_group(G2)});
-translate_1(Int) when is_integer(Int) ->
+translate_1(Int, _) when is_integer(Int) ->
    Int;
-translate_1(Tree) ->
+translate_1(Tree, _) ->
    {error, {unknown,Tree}}.
 
 maybe_strip_anchors([{piece,'^',_}]) -> {"^","",[]};
@@ -436,13 +444,13 @@ count_capturing_patterns(Term, Cnt) when is_tuple(Term) ->
 count_capturing_patterns(_, Cnt) ->
    Cnt.
 
-check_back_refs(Pieces) ->
-   check_back_refs(Pieces,[]).
+check_back_refs(Pieces,Cnt) ->
+   check_back_refs(Pieces,[],Cnt).
 
-check_back_refs([],Acc) ->
+check_back_refs([],Acc,_) ->
    lists:reverse(Acc);
-check_back_refs([{piece,{back_ref,N},one} = H|T], Acc) ->
-   C = count_capturing_patterns(Acc),
+check_back_refs([{piece,{back_ref,N},one} = H|T], Acc,Cnt) ->
+   C = count_capturing_patterns(Acc) + Cnt,
    if N > C, N < 10 ->
          {error, badbackref};
       N > C ->
@@ -452,13 +460,13 @@ check_back_refs([{piece,{back_ref,N},one} = H|T], Acc) ->
                {error, badbackref};
             true ->
                check_back_refs([{piece,{back_ref,Div},one},
-                                {piece,{char,integer_to_list(Rem)},one}|T], Acc)
+                                {piece,{char,integer_to_list(Rem)},one}|T], Acc,Cnt)
          end;
       true ->
-         check_back_refs(T, [H|Acc])
+         check_back_refs(T, [H|Acc],Cnt)
    end;
-check_back_refs([H|T],Acc) ->
-   check_back_refs(T, [H|Acc]).
+check_back_refs([H|T],Acc,Cnt) ->
+   check_back_refs(T, [H|Acc],Cnt).
 
 regex_flags(<<>>) -> [dollar_endonly];
 regex_flags([]) -> [dollar_endonly];
