@@ -133,7 +133,7 @@ translate(String) when is_list(String) ->
    case xs_regex_parser:parse(Tokens) of
       {ok,Tree} ->
          %io:format("~p~n",[Tree]),
-         case translate_1(Tree, 0) of
+         case catch translate_1(Tree, {[],0}) of
             {error,_} = Err ->
                Err;
             Trans ->
@@ -218,9 +218,9 @@ compile(Expr0,Flags) ->
 %% ====================================================================
 -spec translate_1(regex(), integer()) -> string() | {group, group_part()} | {error, _}.
 translate_1([H|_] = All, CurrCnt) when not is_integer(H) -> % regex()
-   Fun = fun(G, Cnt) ->
+   Fun = fun(G, {Open, Cnt}) ->
                NewCnt = count_capturing_patterns(G) + Cnt,
-               {translate_1(G, Cnt), NewCnt}
+               {translate_1(G, {Open, Cnt}), {Open, NewCnt}}
          end,
    {[Hd|Tl],_} = lists:mapfoldl(Fun, CurrCnt, All),
    Hd ++ lists:flatten(["|" ++ X || X <- Tl]);
@@ -254,8 +254,9 @@ translate_1({char_class,Cc}, _) ->
 translate_1({neg_char_class,Cc}, _) -> 
    Range = xs_regex_util:range(Cc),
    "(?-i:[^" ++ xs_regex_util:range_to_regex(Range) ++ "])";
-translate_1({paren,RegEx}, CurrCnt) ->
-   "("++ translate_1(RegEx, CurrCnt) ++")";
+translate_1({paren,RegEx}, {Open, Cnt}) ->
+   Cnt1 = Cnt + 1,
+   "("++ translate_1(RegEx, {[Cnt1|Open], Cnt1}) ++")";
 translate_1({nc_paren,RegEx}, CurrCnt) ->
    "(?:"++ translate_1(RegEx, CurrCnt) ++")";
 translate_1({RegEx,{q,Quant}}, CurrCnt) ->
@@ -449,21 +450,27 @@ check_back_refs(Pieces,Cnt) ->
 
 check_back_refs([],Acc,_) ->
    lists:reverse(Acc);
-check_back_refs([{piece,{back_ref,N},one} = H|T], Acc,Cnt) ->
+check_back_refs([{piece,{back_ref,N},one} = H|T], Acc,{Open,Cnt}) ->
    C = count_capturing_patterns(Acc) + Cnt,
-   if N > C, N < 10 ->
-         {error, badbackref};
-      N > C ->
-         Rem = N rem 10,
-         Div = N div 10,
-         if Div == 0 ->
-               {error, badbackref};
-            true ->
-               check_back_refs([{piece,{back_ref,Div},one},
-                                {piece,{char,integer_to_list(Rem)},one}|T], Acc,Cnt)
-         end;
+   case lists:member(N, Open) of
       true ->
-         check_back_refs(T, [H|Acc],Cnt)
+         throw({error, badbackref});
+      false ->
+         if N > C, N < 10 ->
+               throw({error, badbackref});
+            N > C ->
+               Rem = N rem 10,
+               Div = N div 10,
+               if Div == 0 ->
+                     throw({error, badbackref});
+                  true ->
+                     check_back_refs([{piece,{back_ref,Div},one},
+                                      {piece,{char,integer_to_list(Rem)},one}|T], 
+                                     Acc,{Open,Cnt})
+               end;
+            true ->
+               check_back_refs(T, [H|Acc],{Open,Cnt})
+         end
    end;
 check_back_refs([H|T],Acc,Cnt) ->
    check_back_refs(T, [H|Acc],Cnt).
