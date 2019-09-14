@@ -89,7 +89,7 @@
 -export([normalize/1,
          translate/1]).
 
--export([compile/2]).
+-export([compile/2, analyze/2]).
 
 -export([transform_replace/2]).
 -export([simple_escape/1]).
@@ -143,6 +143,26 @@ translate(String) when is_list(String) ->
          {error, {invalid_regex, lists:flatten(O)}}
    end.
 
+analyze([]) -> {ok, []};
+analyze(Binary) when is_binary(Binary) ->
+   analyze(unicode:characters_to_list(Binary));
+analyze(String) when is_list(String) ->
+   % Should not fail
+   {ok,Tokens,_} = xs_regex_scanner:string(String),
+   %io:format("~p~n",[Tokens]),
+   case xs_regex_parser:parse(Tokens) of
+      {ok,Tree} ->
+         %io:format("~p~n",[Tree]),
+         case catch translate_1(Tree, {[],0}) of
+            {error,_} = Err ->
+               Err;
+            Trans ->
+               {ok, Trans, Tree}
+         end;
+      {error,{_,_,O}} ->
+         {error, {invalid_regex, lists:flatten(O)}}
+   end.
+
 %% simply escapes the backslash escape character in a string
 -spec simple_escape(string()) -> string().
 simple_escape([]) -> [];
@@ -171,6 +191,39 @@ transform_replace(String, Depth) ->
 get_depth(String) ->
    {ok, get_depth(String,0)}.
 
+analyze(Expr0, Flags) ->
+   try
+      FlagList1 = regex_flags(Flags),
+      X = lists:member(extended, FlagList1),
+      FlagList = FlagList1 ++ [{newline, any}, unicode, ucp, no_start_optimize],
+      Opts = FlagList -- [do_qe],
+      Q = lists:member(do_qe, FlagList),
+      Expr = if X ->
+                   strip_esc_ws(Expr0);
+                true ->
+                   Expr0
+             end,
+      {Expr1, Tree1} = 
+         if Q == false ->
+                {ok, Tr, Tree} = analyze(Expr),
+                {Tr, Tree};
+            true -> {<<"\\Q", Expr/binary, "\\E">>, []}
+         end,
+      {ok, MP} = re:compile(Expr1, Opts),
+      case catch re:run("",MP) of
+         nomatch ->
+            {false, MP, translate_2(Tree1)};
+         {match,_} ->
+            {true, MP, translate_2(Tree1)};
+         _ ->
+            {false, MP, translate_2(Tree1)}
+      end
+   catch 
+      _:{error, {invalid_flag, _}} = E ->
+         E;
+      _:E ->
+         {error, {invalid_regex, E}}
+   end.
 
 %% Matching the zero-length-string is (sometimes) an error in XQuery, 
 %% so can be tested here. 
@@ -180,19 +233,19 @@ get_depth(String) ->
 %% Flag characters can only be "s, m, i, x and q". See comment above.
 %% Returns {MatchesZeroLengthString, MP}
 -spec compile(binary(),binary()) -> {boolean(), any()} | {error, _}.
-compile(Expr0,Flags) ->
+compile(Expr0, Flags) ->
    try
       FlagList1 = regex_flags(Flags),
       X = lists:member(extended, FlagList1),
       FlagList = FlagList1 ++ [{newline, any}, unicode, ucp, no_start_optimize],
       Opts = FlagList -- [do_qe],
-      Q = [ok || do_qe <- FlagList],
+      Q = lists:member(do_qe, FlagList),
       Expr = if X ->
                    strip_esc_ws(Expr0);
                 true ->
                    Expr0
              end,
-      Expr1 = if Q == [] -> 
+      Expr1 = if Q == false -> 
                     {ok, Tr} = translate(Expr),
                     Tr;
                  true -> <<"\\Q", Expr/binary, "\\E">>
@@ -226,7 +279,6 @@ translate_1([H|_] = All, CurrCnt) when not is_integer(H) -> % regex()
    Hd ++ lists:flatten(["|" ++ X || X <- Tl]);
 translate_1([H|_] = Str, _CurrCnt) when is_integer(H) -> % string()
    Str;
-
 translate_1({branch,Pieces}, CurrCnt) ->
    HasBackRef = lists:any(fun(P) -> is_back_ref(P) end, Pieces),
    NewPieces = 
@@ -238,7 +290,6 @@ translate_1({branch,Pieces}, CurrCnt) ->
    {Hd,Tl,Rest} = maybe_strip_anchors(NewPieces),
    Out = [translate_1(X, CurrCnt) || X <- Rest], 
    Hd ++ lists:flatten(Out) ++ Tl;
-
 translate_1({piece, Atom, Quant}, CurrCnt) ->
    Quant1 = check_quantifier(Quant),
    translate_1(Atom, CurrCnt) ++ Quant1;
@@ -274,6 +325,40 @@ translate_1(Int, _) when is_integer(Int) ->
    Int;
 translate_1(Tree, _) ->
    {error, {unknown,Tree}}.
+
+%% return the grouping layout of the regex
+-spec translate_2(regex(), integer()) -> {integer(), list()}.
+translate_2(All) ->
+    {_, Deep} = translate_2(All, 0),
+    lists:flatten(Deep).
+
+translate_2({paren, Paren}, Cnt) ->
+    Cnt1 = Cnt + 1,
+    {Cnt2, Paren1} = translate_2(Paren, Cnt1),
+    case lists:flatten(Paren1) of
+        [] ->
+            {Cnt2, {group, Cnt1}};
+        F ->
+            {Cnt2, {group, Cnt1, F}}
+    end;
+translate_2({nc_paren, Paren}, Cnt) ->
+   translate_2(Paren, Cnt);
+translate_2({branch,Pieces}, Cnt) ->
+   translate_2(Pieces, Cnt);
+translate_2({group,Pieces}, Cnt) ->
+   translate_2(Pieces, Cnt);
+translate_2({piece, Pieces, _}, Cnt) ->
+   translate_2(Pieces, Cnt);
+translate_2([H], Cnt) ->
+   {Cnt1, H1} = translate_2(H, Cnt),
+   {Cnt1, [H1]};
+translate_2([H|T], Cnt) ->
+   {Cnt1, H1} = translate_2(H, Cnt),
+   {Cnt2, T2} = translate_2(T, Cnt1),
+   {Cnt2, [H1|T2]};
+translate_2(_, Cnt) ->
+   {Cnt, []}.
+
 
 maybe_strip_anchors([{piece,'^',_}]) -> {"^","",[]};
 maybe_strip_anchors([{piece,'^',_}|Pieces]) ->
