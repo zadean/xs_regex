@@ -110,6 +110,8 @@
                       {subtract, char_group(), char_group()}.
 -type group_part() :: {range, integer(), integer()} | {value, integer()} .
 -type quantifier() :: {q, string()}.
+% possibly nested capture grouping
+-type groups() :: [{group, integer()} | {group, integer(), groups()}].
 
 %% Normalizes hex and decimal XML Character references in a string.
 %% Example: "AB&#x20;C"   -> "AB C"
@@ -191,6 +193,7 @@ transform_replace(String, Depth) ->
 get_depth(String) ->
    {ok, get_depth(String,0)}.
 
+-spec analyze(binary(),binary()) -> {boolean(), any(), groups()} | {error, _}.
 analyze(Expr0, Flags) ->
    try
       FlagList1 = regex_flags(Flags),
@@ -269,7 +272,7 @@ compile(Expr0, Flags) ->
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
--spec translate_1(regex(), integer()) -> string() | {group, group_part()} | {error, _}.
+-spec translate_1(regex(), {list(), integer()}) -> string() | {group, group_part()} | {error, _}.
 translate_1([H|_] = All, CurrCnt) when not is_integer(H) -> % regex()
    Fun = fun(G, {Open, Cnt}) ->
                NewCnt = count_capturing_patterns(G) + Cnt,
