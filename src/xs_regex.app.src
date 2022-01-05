@@ -1,15 +1,12 @@
-{application, xs_regex,
- [{description, "XML Schema regex translation library"},
-  {vsn, "0.1.0"},
-  {registered, []},
-  {applications,
-   [kernel,
-    stdlib
-   ]},
-  {env,[]},
-  {modules, []},
-
-  {maintainers, ["Zachary N. Dean"]},
-  {licenses, ["Apache 2.0"]},
-  {links, []}
- ]}.
+{application, xs_regex, [
+    {description, "XML Schema regex translation library"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [
+        {"Github", "https://github.com/zadean/xs_regex"}
+    ]}
+]}.
